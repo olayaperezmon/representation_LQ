@@ -113,7 +113,7 @@ if __name__ == '__main__':
 
         print('-'*80)
 
-        Table.LatexPDF('./latex/tables.pdf', [table_ae, table_rae])
+        Table.LatexPDF('./latex/tables.pdf', [table_ae, table_rae], dedicated_pages=False)
 
         
         ## QUAPY ##

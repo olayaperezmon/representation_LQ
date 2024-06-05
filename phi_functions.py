@@ -11,6 +11,7 @@ from collections import Counter
 import quapy as qp
 
 class Phi(ABC):
+
     def fit(self, X, y):
         ...
     def transform(self, X):
