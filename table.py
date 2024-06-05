@@ -1,0 +1,660 @@
+import numpy as np
+from typing import Union, List
+from collections.abc import Iterable
+from dataclasses import dataclass, replace
+from scipy.stats import wilcoxon, ttest_ind_from_stats
+import pandas as pd
+import os
+from pathlib import Path
+
+
+@dataclass
+class Format:
+    mean_prec: int = 3
+    std_prec: int = 3
+    meanrank_prec: int = 1
+    meanrank_std_prec: int = 1
+    show_std: bool = True
+    small_std: bool = False
+    rel_reduction_wrt: str = None
+    rel_increment_wrt: str = None
+    rel_val_prec:int = 2
+    remove_zero: bool = False
+    color: bool = True
+    maxtone: int = 40
+    style: str = 'minimal'
+    lower_is_better: bool = True
+    stat_test: str = 'wilcoxon'
+    color_mode: str = 'local'
+    with_mean: bool = True
+    with_rank_mean: bool = True
+    only_full_mean: bool = True
+    best_color: str = 'green'
+    worst_color: str = 'red'
+
+
+class Cell:
+
+    def __init__(self, format: Format, local_group: 'CellGroup', global_group: 'CellGroup', benchmark: str, method: str):
+        self.values = []
+        self.format = format
+        self.touch()
+        self.local_group = local_group
+        self.local_group.register_cell(self, method)
+        self.global_group = global_group
+        self.global_group.register_cell(self, method)
+
+    def __len__(self):
+        return len(self.values)
+
+    def mean(self):
+        if self.mean_ is None:
+            self.mean_ = np.mean(self.values)
+        return self.mean_
+
+    def rank(self, global_scope=False) -> int:
+        group = self.global_group if global_scope else self.local_group
+        return group.rank(self)
+
+    def std(self):
+        if self.std_ is None:
+            self.std_ = np.std(self.values)
+        return self.std_
+
+    def touch(self):
+        self.mean_ = None
+        self.std_ = None
+
+    def append(self, v: Union[float,Iterable]):
+        if isinstance(v, Iterable):
+            self.values.extend(v)
+        else:
+            self.values.append(v)
+        self.touch()
+
+    def isEmpty(self):
+        return len(self)==0
+
+    def isBest(self, global_scope=False):
+        group = self.global_group if global_scope else self.local_group
+        best = group.best()
+        if best is not None:
+            return (best == self) or (np.isclose(best.mean(), self.mean()))
+        return False
+
+    def print_mean(self):
+        if self.isEmpty():
+            return ''
+        else:
+            return f'{self.mean():.{self.format.mean_prec}f}'
+
+    def print(self):
+        if self.isEmpty():
+            return ''
+
+        whitespace = '$^{\phantom{\dag}}$'
+
+        # mean
+        # ---------------------------------------------------
+        mean = self.print_mean()
+        if self.format.remove_zero:
+            mean = mean.replace('0.', '.')
+
+        # std ?
+        # ---------------------------------------------------
+        if self.format.show_std:
+            std = f'$\pm${whitespace}{self.std():.{self.format.std_prec}f}'
+            if self.format.small_std:
+                std = '\\scriptsize{' + std + '}'
+        else:
+            std = ''
+
+        # relative reduction ?
+        # ---------------------------------------------------
+        if self.format.rel_reduction_wrt is not None:
+            wrt = self.format.rel_reduction_wrt
+            relative_str = "(?)"
+            if wrt in self.local_group.cells and not self.local_group.cells[wrt].isEmpty() and not self.isEmpty():
+                wrt_cell = self.local_group.cells[wrt]
+                wrt_value = wrt_cell.mean()
+                mean_value = self.mean()
+                relative = 100-100*(wrt_value-mean_value)/wrt_value
+                relative_str = f'({relative:.{self.format.rel_val_prec}f})'
+        else:
+            relative_str = ''
+
+
+        # bold or statistical test
+        # ---------------------------------------------------
+        if self.isBest():
+            str_cell = f'\\textbf{{{mean}{whitespace}{std}}}'
+        else:
+            comp_symbol = whitespace
+            pval = self.local_group.compare(self)
+            if pval is not None:
+                if 0.001 > pval:
+                    comp_symbol = whitespace
+                elif 0.01 > pval >= 0.001:
+                    comp_symbol = '$^{\dag}$'
+                elif pval >= 0.01:
+                    comp_symbol = '$^{\ddag}$'
+            str_cell = f'{mean}{comp_symbol}{std} {relative_str}'
+
+        # color ?
+        # ---------------------------------------------------
+        if self.format.color:
+            group = self.local_group if self.format.color_mode == 'local' else self.global_group
+            str_cell += ' ' + group.color(self)
+
+        return str_cell
+
+
+class CellGroup:
+
+    def __init__(self, format: Format):
+
+        assert format.stat_test in ['wilcoxon', 'ttest', None], \
+            f"unknown {format.stat_test=}, valid ones are wilcoxon, ttest, or None"
+        assert format.color_mode in ['local', 'global'], \
+            f"unknown {format.color_mode=}, valid ones are local and global"
+        # if (format.color_global_min is not None or format.color_global_max is not None) and format.color_mode=='local':
+        #     print('warning: color_global_min and color_global_max are only considered when color_mode==local')
+        self.format = format
+        self.cells = {}
+
+    def register_cell(self, cell: Cell, method: str):
+        self.cells[method] = cell
+
+    def non_empty_cells(self):
+        return [c for c in self.cells.values() if not c.isEmpty()]
+
+    def max(self):
+        cells = self.non_empty_cells()
+        if len(cells) > 0:
+            return cells[np.argmax([c.mean() for c in cells])]
+        return None
+
+    def min(self):
+        cells = self.non_empty_cells()
+        if len(cells) > 0:
+            return cells[np.argmin([c.mean() for c in cells])]
+        return None
+
+    def best(self) -> Cell:
+        return self.min() if self.format.lower_is_better else self.max()
+
+    def worst(self) -> Cell:
+        return self.max() if self.format.lower_is_better else self.min()
+
+    def isEmpty(self):
+        return len(self.non_empty_cells()) == 0
+
+    def compare(self, cell: Cell):
+        best = self.best()
+        best_n = len(best)
+        cell_n = len(cell)
+        if best_n > 0 and cell_n > 0:
+            if self.format.stat_test == 'wilcoxon':
+                try:
+                    _, p_val = wilcoxon(best.values, cell.values)
+                except ValueError:
+                    p_val = None
+                return p_val
+            elif self.format.stat_test == 'ttest':
+                best_mean, best_std = best.mean(), best.std()
+                cell_mean, cell_std = cell.mean(), cell.std()
+                _, p_val = ttest_ind_from_stats(best_mean, best_std, best_n, cell_mean, cell_std, cell_n)
+                return p_val
+            elif self.format.stat_test is None:
+                return None
+            else:
+                raise ValueError(f'unknown statistical test {self.stat_test}')
+        else:
+            return None
+
+    def color(self, cell: Cell):
+        cell_mean = cell.mean()
+
+        # if self.format.color_mode == 'local':
+        best = self.best()
+        worst = self.worst()
+        best_mean = best.mean()
+        worst_mean = worst.mean()
+
+        if best is None or worst is None or best_mean == worst_mean or cell.isEmpty():
+            return ''
+
+        # normalize val in [0,1]
+        maxval = max(best_mean, worst_mean)
+        minval = min(best_mean, worst_mean)
+        # else:
+        #     maxval = self.format.color_global_max
+        #     minval = self.format.color_global_min
+
+        normval = (cell_mean - minval) / (maxval - minval)
+
+        if self.format.lower_is_better:
+            normval = 1 - normval
+
+        normval = np.clip(normval, 0, 1)
+
+        normval = normval * 2 - 1  # rescale to [-1,1]
+        if normval < 0:
+            color = cell.format.worst_color
+            tone = cell.format.maxtone * (-normval)
+        else:
+            color = cell.format.best_color
+            tone = cell.format.maxtone * normval
+
+        return f'\cellcolor{{{color}!{int(tone)}}}'
+
+    def rank(self, cell: Cell) -> int:
+        if cell.isEmpty():
+            return None
+        cell_mean = cell.mean()
+        all_means = [c.mean() for c in self.cells.values()]
+        # all_means.append(cell_mean)
+        all_means = set(all_means)  # remove duplicates so that ties receive the same rank
+        all_means = [x for x in all_means if not np.isnan(x)]  # remove nan
+        all_means = sorted(all_means)
+        return all_means.index(cell_mean)+1
+
+
+class Table:
+
+    def __init__(self,
+                 name='table',
+                 benchmarks=None,
+                 methods=None,
+                 ):
+        self.name = name
+        self.benchmarks = [] if benchmarks is None else benchmarks
+        self.methods = [] if methods is None else methods
+        self.format = Format()
+
+        # if self.format.color_mode == 'global':
+        #     self.format.color_global_min = 0
+        #     self.format.color_global_max = 1
+        # else:
+        #     self.format.color_global_min = None
+        #     self.format.color_global_max = None
+
+        self.T = {}
+        self.by_bench_groups = {}
+        self.global_group = self._new_group()
+        self.left_frame = None
+
+    def add(self, benchmark, method, v):
+        cell = self.get(benchmark, method)
+        cell.append(v)
+
+    def set_left_frame(self, label: str):
+        self.left_frame = label
+
+    def get_benchmarks(self):
+        return self.benchmarks
+
+    def get_methods(self):
+        return self.methods
+
+    def n_benchmarks(self):
+        return len(self.benchmarks)
+
+    def n_methods(self):
+        return len(self.methods)
+
+    def _new_group(self):
+        return CellGroup(self.format)
+
+    def get(self, benchmark, method) -> Cell:
+        if benchmark not in self.benchmarks:
+            self.benchmarks.append(benchmark)
+        if benchmark not in self.by_bench_groups:
+            self.by_bench_groups[benchmark] = self._new_group()
+        if method not in self.methods:
+            self.methods.append(method)
+        b_idx = self.benchmarks.index(benchmark)
+        m_idx = self.methods.index(method)
+        idx = tuple((b_idx, m_idx))
+        if idx not in self.T:
+            self.T[idx] = Cell(
+                self.format,
+                local_group=self.by_bench_groups[benchmark],
+                global_group=self.global_group,
+                benchmark=benchmark,
+                method=method
+            )
+        cell = self.T[idx]
+        return cell
+
+    def get_mean_value(self, benchmark, method) -> float:
+        cell = self.get(benchmark, method)
+        return cell.mean()
+
+    def get_benchmark_cells(self, benchmark):
+        cells = [self.get(benchmark=benchmark, method=m) for m in self.get_methods()]
+        cells = [c for c in cells if not c.isEmpty()]
+        return cells
+
+    def get_method_cells(self, method):
+        cells = [self.get(benchmark=b, method=method) for b in self.get_benchmarks()]
+        cells = [c for c in cells if not c.isEmpty()]
+        return cells
+
+    def get_method_means(self, method_order):
+        mean_group = self._new_group()
+        mean_global_group = self._new_group()
+        cells = []
+        for method in method_order:
+            method_mean = Cell(self.format, local_group=mean_group, global_group=mean_global_group, benchmark='', method=method)
+            leave_empty = False
+            for bench in self.get_benchmarks():
+                mean_value = self.get_mean_value(benchmark=bench, method=method)
+                if not np.isnan(mean_value):
+                    method_mean.append(mean_value)
+                elif self.format.only_full_mean:
+                    leave_empty = True
+                if leave_empty:
+                    break
+            if leave_empty:
+                cells.append(Cell(self.format, local_group=mean_group, global_group=mean_global_group, benchmark='', method=method))
+            else:
+                cells.append(method_mean)
+        return cells
+
+    def get_method_rank_means(self, method_order):
+        rank_mean_group = self._new_group()
+        rank_global_group = self._new_group()
+        cells = []
+        for method in method_order:
+            rankmean_format = replace(self.format)
+            rankmean_format.mean_prec = self.format.meanrank_prec
+            rankmean_format.std_prec = self.format.meanrank_std_prec
+            method_rank_mean = Cell(format=rankmean_format, local_group=rank_mean_group, global_group=rank_global_group, benchmark='', method=method)
+            leave_empty = False
+            for bench in self.get_benchmarks():
+                rank = self.get(benchmark=bench, method=method).rank()
+                if rank is not None:
+                    method_rank_mean.append(rank)
+                elif self.format.only_full_mean:
+                    leave_empty = True
+                if leave_empty:
+                    break
+            if leave_empty:
+                cells.append(Cell(self.format, local_group=rank_mean_group, global_group=rank_global_group, benchmark='', method=method))
+            else:
+                cells.append(method_rank_mean)
+        return cells
+
+    def get_benchmark_values(self, benchmark):
+        values = np.asarray([c.mean() for c in self.get_benchmark_cells(benchmark)])
+        return values
+
+    def get_method_values(self, method):
+        values = np.asarray([c.mean() for c in self.get_method_cells(method)])
+        return values
+
+    def all_mean(self):
+        values = [c.mean() for c in self.T.values() if not c.isEmpty()]
+        return np.mean(values)
+
+    def print(self):  # todo: missing method names?
+        data_dict = {}
+        data_dict['Benchmark'] = [b for b in self.get_benchmarks()]
+        for method in self.get_methods():
+            data_dict[method] = [self.get(bench, method).print_mean() for bench in self.get_benchmarks()]
+        df = pd.DataFrame(data_dict)
+        pd.set_option('display.max_columns', None)
+        pd.set_option('display.max_rows', None)
+        print(df.to_string(index=False))
+
+    def tabular(self, path=None, benchmark_replace=None, method_replace=None, benchmark_order=None, method_order=None, transpose=False):
+        if benchmark_replace is None:
+            benchmark_replace = {}
+        if method_replace is None:
+            method_replace = {}
+        if benchmark_order is None:
+            benchmark_order = self.get_benchmarks()
+        if method_order is None:
+            method_order = self.get_methods()
+
+        if transpose:
+            row_order, row_replace = method_order, method_replace
+            col_order, col_replace = benchmark_order, benchmark_replace
+            ncols = self.n_benchmarks()+1
+        else:
+            row_order, row_replace = benchmark_order, benchmark_replace
+            col_order, col_replace = method_order, method_replace
+            ncols = self.n_methods() + 1
+
+        n_cols = len(col_order)
+        add_mean_col = self.format.with_mean and transpose
+        add_mean_row = self.format.with_mean and not transpose
+        last_col_idx = n_cols+2 if add_mean_col else n_cols+1
+        average_label = '\\textit{Average}'
+        rank_average_label = '\\textit{Rank}'
+
+        if self.format.with_mean:
+            mean_cells = self.get_method_means(method_order)
+            rankmean_cells = self.get_method_rank_means(method_order)
+
+        lines = []
+        if self.format.style == 'full':
+            toprule = f'\\cline{{2-{last_col_idx}}}'
+            endl = ' \\\\\\hline'
+            midrule = endl
+            bottomrule = endl
+            corner = '\multicolumn{1}{c|}{} & '
+
+            begin_tabular = '\\begin{tabular}{|c' + '|c' * n_cols + ('||c' if add_mean_col else '') + "|}"
+        elif self.format.style == 'rules':
+            toprule = '\\toprule'
+            endl = ' \\\\'
+            midrule = ' \\\\\\midrule'
+            bottomrule = ' \\\\\\bottomrule'
+            corner = ' & '
+
+            begin_tabular = '\\begin{tabular}{c' + 'c' * n_cols + ('c' if add_mean_col else '') + "}"
+        elif self.format.style == 'minimal':
+            toprule = f'\\cline{{2-{last_col_idx}}}'
+            endl = ' \\\\'
+            midrule = ' \\\\\\hline'
+            bottomrule = ' \\\\\\hline'
+            corner = '\multicolumn{1}{c|}{} & '
+
+            begin_tabular = '\\begin{tabular}{|c|' + 'c' * n_cols + ('|c' if add_mean_col else '') + "|}"
+        else:
+            raise ValueError(f'unknown format style {self.format.style}')
+
+        lines.append(begin_tabular)
+        lines.append(toprule)
+
+        l = corner
+        l += ' & '.join([col_replace.get(col, col) for col in col_order])
+        if add_mean_col:
+            l += ' & ' + average_label
+        l += midrule
+        lines.append(l)
+
+        # printed_table = [[self.get(benchmark=col if transpose else row, method=row if transpose else col).print() for col in col_order] for row in row_order]
+        # printed_lengths = np.zeros(len(row_order), len(col_order))
+        # for i in range(len(row_order)):
+        #     for j in range(len(col_order)):
+        #         printed_lengths[i,j] = len(printed_table[i][j])
+        # col_width = printed_lengths.max(axis=0)
+
+        for i, row in enumerate(row_order):
+            rowname = row_replace.get(row, row)
+            l = rowname + ' & '
+            l += ' & '.join([
+                self.get(benchmark=col if transpose else row, method=row if transpose else col).print()
+                for col in col_order
+            ])
+            if add_mean_col:
+                l+= ' & ' + mean_cells[i].print()
+
+            if i < len(row_order)-1:
+                l += endl
+            else:  # last line
+                if add_mean_row:  # midrule, since there will be an additional row
+                    l += midrule
+                else:
+                    l += bottomrule  # bottomrule, this is indeed the last row
+            lines.append(l)
+
+        if add_mean_row:
+            l = average_label + ' & '
+            l += ' & '.join([mean_cell.print() for mean_cell in mean_cells])
+
+            if self.format.with_rank_mean:
+                l += '\\\\'
+                lines.append(l)
+                l = rank_average_label + ' & '
+                l += ' & '.join([mean_cell.print() for mean_cell in rankmean_cells])
+
+            l += bottomrule
+            lines.append(l)
+
+
+        lines.append('\\end{tabular}')
+
+        if self.left_frame is not None:
+            self._add_left_frame(lines, ncols)
+
+        tabular_tex = '\n'.join(lines)
+
+        if path is not None:
+            parent = Path(path).parent
+            if parent:
+                os.makedirs(parent, exist_ok=True)
+            with open(path, 'wt') as foo:
+                foo.write(tabular_tex)
+
+        return tabular_tex
+
+    def _add_left_frame(self, lines, ncols):
+        if self.format.style != 'rules':
+            raise NotImplementedError('the current variant only works for style="rules"')
+
+        label = self.left_frame
+        # adds |c to header (lines[0])
+        if self.format.style!='rules':
+            lines[0] = lines[0].replace('{tabular}{', '{tabular}{|c')
+        else:
+            lines[0] = lines[0].replace('{tabular}{', '{tabular}{c')
+
+        # increase by 1 the first clines (depends on style) and adapts the hline before average
+        if lines[1].startswith('\\cline'):
+            from_, to_ = lines[1].replace('\\cline{', '').replace('}','').split('-')
+            from_ = int(from_)+1
+            to_ = int(to_) + 1
+            lines[1] = f'\\cline{{{from_}-{to_}}}'
+
+        if lines[-4].endswith('\midrule'):
+            lines[-4] = lines[-4].replace('\midrule', f'\cmidrule(lr){{{2}-{ncols+1}}}')
+
+        elif lines[-4].endswith('\hline'):
+            lines[-4] = lines[-4].replace('\hline', f'\\cline{{{from_-1}-{to_}}}')
+
+        # adds another \multicolumn{1}{c}{} first line
+        lines[2] = '\multicolumn{1}{c}{} & ' + lines[2]
+
+        # adds \\multirow{NB}{*}{\rotatebox[origin=c]{90}{label}} &
+        # to the second line (NB=number of benchmarks, label=left_frame_label)
+        num_rows = len(lines) - 4  # 4 lines are: begin-tabular, top line, header, and end-tabular
+        lines[3] = f'\multirow{{{num_rows}}}{{*}}{{ \\rotatebox[origin=c]{{90}}{{ {label} }}}} & ' + lines[3]
+
+        # adds & to the rest of the lines
+        for i in range(4, len(lines)-1):
+            lines[i] = ' & ' + lines[i]
+
+    def table(self, tabular_path, benchmark_replace=None, method_replace=None, resizebox=True, caption=None, label=None, benchmark_order=None, method_order=None, transpose=False):
+        if benchmark_replace is None:
+            benchmark_replace = {}
+        if method_replace is None:
+            method_replace = {}
+
+        lines = []
+        lines.append('\\begin{table}[h]')
+        lines.append('\center')
+        if resizebox:
+            lines.append('\\resizebox{\\textwidth}{!}{%')
+
+        tabular_str = self.tabular(tabular_path, benchmark_replace, method_replace, benchmark_order, method_order, transpose)
+        if tabular_path is None:
+            lines.append(tabular_str)
+        else:
+            lines.append(f'\input{{tables/{Path(tabular_path).name}}}')
+
+        if resizebox:
+            lines.append('}%')
+        if caption is None:
+            caption = tabular_path.replace('_', '\_')
+        lines.append(f'\caption{{{caption}}}')
+        if label is not None:
+            lines.append(f'\label{{{label}}}')
+        lines.append('\end{table}')
+
+        table_tex = '\n'.join(lines)
+
+        return table_tex
+
+    def document(self, tex_path, tabular_dir='tables', *args, **kwargs):
+        Table.Document(tex_path, tables=[self], tabular_dir=tabular_dir, *args, **kwargs)
+
+    def latexPDF(self, pdf_path, tabular_dir='tables', *args, **kwargs):
+        return Table.LatexPDF(pdf_path, tables=[self], tabular_dir=tabular_dir, *args, **kwargs)
+
+    @classmethod
+    def Document(self, tex_path, tables:List['Table'], tabular_dir='tables', landscape=True, dedicated_pages=True, *args, **kwargs):
+        lines = []
+        lines.append('\\documentclass[10pt,a4paper]{article}')
+        lines.append('\\usepackage[utf8]{inputenc}')
+        lines.append('\\usepackage{amsmath}')
+        lines.append('\\usepackage{amsfonts}')
+        lines.append('\\usepackage{amssymb}')
+        lines.append('\\usepackage{graphicx}')
+        lines.append('\\usepackage{xcolor}')
+        lines.append('\\usepackage{colortbl}')
+        lines.append('\\usepackage{booktabs}')
+        lines.append('\\usepackage{multirow}')
+        if landscape:
+            lines.append('\\usepackage[landscape]{geometry}')
+        lines.append('')
+        lines.append('\\begin{document}')
+        for table in tables:
+            lines.append('')
+            lines.append(table.table(os.path.join(Path(tex_path).parent, tabular_dir, table.name + '_table.tex'), *args, **kwargs))
+            lines.append('\n')
+            if dedicated_pages:
+                lines.append('\\newpage\n')
+        lines.append('\\end{document}')
+
+        document = '\n'.join(lines)
+
+        parent = Path(tex_path).parent
+        if parent:
+            os.makedirs(parent, exist_ok=True)
+        with open(tex_path, 'wt') as foo:
+            foo.write(document)
+
+        return document
+
+    @classmethod
+    def LatexPDF(cls, pdf_path: str, tables:List['Table'], tabular_dir: str = 'tables', *args, **kwargs):
+        assert pdf_path.endswith('.pdf'), f'{pdf_path=} does not seem a valid name for a pdf file'
+        tex_path = pdf_path.replace('.pdf', '.tex')
+
+        cls.Document(tex_path, tables, tabular_dir, *args, **kwargs)
+
+        dir = Path(pdf_path).parent
+        pwd = os.getcwd()
+
+        print('currently in', pwd)
+        print("[Tables Done] runing latex")
+        os.chdir(dir)
+        os.system('pdflatex ' + Path(tex_path).name)
+        basename = Path(tex_path).name.replace('.tex', '')
+        os.system(f'rm {basename}.aux {basename}.log {basename}.tex')
+        os.chdir(pwd)
+        print('[Done]')

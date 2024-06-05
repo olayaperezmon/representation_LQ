@@ -8,6 +8,8 @@ from quapy.method.aggregative import *
 import quapy.functional as F
 from quapy.protocol import APP, UPP
 from phi_functions import *
+from quapy.util import pickled_resource
+from table import Table
 
 
 class RepresentationLearningQuantification(BaseQuantifier, ABC):
@@ -17,7 +19,7 @@ class RepresentationLearningQuantification(BaseQuantifier, ABC):
 
     def fit(self, data: LabelledCollection):
         self.n_classes = data.n_classes
-        self.M = [self.Phi.transform(data.X[data.y==i])  for i in data.classes_]
+        self.M = [self.Phi.transform(data.X[data.y==i]) for i in data.classes_]
         self.M = np.vstack(self.M).T
         return self
 
@@ -41,10 +43,14 @@ class RepresentationLearningQuantification(BaseQuantifier, ABC):
 
 def qp_quantifiers():
     #yield ACC(LogisticRegression(max_iter=1000)), "ACC"
-    #yield PACC(LogisticRegression(max_iter=1000)), "PACC"
-    yield DMy(LogisticRegression(max_iter=1000)), "HDy"
+    yield PACC(LogisticRegression(max_iter=1000)), "PACC"
+    # yield DMy(LogisticRegression(max_iter=1000)), "HDy"
+
 
 classifiers = [LogisticRegression(max_iter=1000, C=1.0, class_weight=None), LogisticRegression(max_iter=1000, C=0.1, class_weight="balanced")]
+
+lr_grid = {'C': np.logspace(-3,3,7), 'class_weight': ['balanced', None]}
+
 
 def representations():
     #yield PhiACC(), "ACC"
@@ -55,42 +61,69 @@ def representations():
     yield Phi_Z_score(), "Z Score"
     #yield Phi_mean(), "Mean"
     yield Phi_classifiers_combination(classifiers), "Combination of Classifiers"
+    yield Phi_classifiers_grid(LogisticRegression, lr_grid), "Grid of Classifiers"
+    yield Phi_classifiers_grid(LogisticRegression, lr_grid, acc_weight=True), "Grid of Classifiers Weighted"
 
-DEBUG = True
+
+# DEBUG = True
+DEBUG = False
 np.random.seed(2032)
 
-#example
+
+def run_experiment(train, test, phi, name):
+    phi.fit(train.X, train.y)
+    if name == "HDy":
+        rep = RepresentationLearningQuantification(phi, "HD")
+    else:
+        rep = RepresentationLearningQuantification(phi, "fro")
+    rep.fit(train)
+    report = qp.evaluation.evaluation_report(rep, UPP(test, repeats=1000), error_metrics=["mrae", "mae"])
+    return report
+
+
 if __name__ == '__main__':
 
-    qp.environ['SAMPLE_SIZE'] = 100
+    qp.environ['SAMPLE_SIZE'] = 500
     uci_datasets = ['dry-bean','academic-success'] #,'digits'] #,'letter']
-    
+
+    table_ae = Table(name='mae')
+    table_rae = Table(name='mrae')
+
     for dataset_name in uci_datasets:
+        print(dataset_name)
         
         if DEBUG:
             train, test = qp.datasets.fetch_UCIMulticlassDataset(dataset_name).reduce().train_test
         else:
             train, test = qp.datasets.fetch_UCIMulticlassDataset(dataset_name).train_test
-        train, val = train.split_stratified(train_prop=0.6)
-        
+
         for phi, name in representations():
-            phi.fit(train.X, train.y)
-            if name == "HDy":
-                rep = RepresentationLearningQuantification(phi, "HD")    
-            else:
-                rep = RepresentationLearningQuantification(phi, "fro")
-            rep.fit(train)
-            """p_hat = rep.quantify(test.X)
-            print(f"{name} for {dataset_name}:")
-            print("MRAE", qp.error.mrae(test.prevalence(), p_hat))
-            print("MAE", qp.error.mae(test.prevalence(), p_hat))"""
-            report = qp.evaluation.evaluation_report(rep, UPP(test, repeats=1000),error_metrics=["mrae", "mae"])
-            print(report["mrae"].mean())
+            path = f'results/{dataset_name}/{name}'+('__debug' if DEBUG else '')+'.pkl'
+            result = pickled_resource(path, run_experiment, train, test, phi, name)
+
+            aes = result["mae"].values
+            raes = result["mrae"].values
+
+            print(f'Phi: {name}')
+            print(f'MAE={np.mean(aes):.6f}')
+            print(f'MRAE={np.mean(raes):.6f}')
+            print()
+            table_ae.add(benchmark=dataset_name, method=name, v=aes)
+            table_rae.add(benchmark=dataset_name, method=name, v=raes)
+
+        print('-'*80)
+
+        Table.LatexPDF('./latex/tables.pdf', [table_ae, table_rae])
+
         
         ## QUAPY ##
-        """param_grid = {
-        'classifier__C': np.logspace(-3, 3, 7),
-        'classifier__class_weight': [None, 'balanced']
+
+        """
+        train, val = train.split_stratified(train_prop=0.6)
+
+        param_grid = {
+            'classifier__C': np.logspace(-3, 3, 7),
+            'classifier__class_weight': [None, 'balanced']
         }
         
         for quantifier, q_name in qp_quantifiers():
@@ -105,4 +138,5 @@ if __name__ == '__main__':
                     ).fit(train)
             model = optimizer.best_model()
             report = qp.evaluation.evaluation_report(model, UPP(test, repeats=1000),error_metrics=["mrae", "mae"])
-            print(report["mrae"].mean())"""
+            print(report["mrae"].mean())
+        """
