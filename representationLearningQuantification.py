@@ -31,17 +31,17 @@ class RepresentationLearningQuantification(BaseQuantifier, ABC):
         #Hellinger Distance
         elif self.solver == "HD":
             def loss(p):
-                p = np.expand_dims(p, axis=0)
-                mixture_distribution = (p @ self.M.reshape(self.n_classes,-1)).reshape(self.n_classes, -1)
-                hdist = [np.sqrt(np.sum((np.sqrt(q[c]) - np.sqrt(mixture_distribution[c]))**2)) for c in range(self.n_classes)]
-                return np.mean(hdist)
+                M = 1/self.n_classes*self.M
+                qq = 1/self.n_classes*q
+                hdist = np.sqrt(np.sum((np.sqrt(p@M.T) - np.sqrt(qq))**2))
+                return hdist
             
         return F.optim_minimize(loss, n_classes=self.n_classes)
 
 
 def qp_quantifiers():
-    yield ACC(LogisticRegression(max_iter=1000)), "ACC"
-    yield PACC(LogisticRegression(max_iter=1000)), "PACC"
+    #yield ACC(LogisticRegression(max_iter=1000)), "ACC"
+    #yield PACC(LogisticRegression(max_iter=1000)), "PACC"
     yield DMy(LogisticRegression(max_iter=1000)), "HDy"
 
 classifiers = [LogisticRegression(max_iter=1000, C=1.0, class_weight=None), LogisticRegression(max_iter=1000, C=0.1, class_weight="balanced")]
@@ -52,7 +52,7 @@ def representations():
     #yield PhiHDy(10), "HDy"
     #yield Phi_most_prob(), "Most probable"
     #yield Phi_most_voted(), "Most voted" 
-    #yield Phi_Z_score(), "Z Score"
+    yield Phi_Z_score(), "Z Score"
     #yield Phi_mean(), "Mean"
     yield Phi_classifiers_combination(classifiers), "Combination of Classifiers"
 
@@ -63,7 +63,7 @@ np.random.seed(2032)
 if __name__ == '__main__':
 
     qp.environ['SAMPLE_SIZE'] = 100
-    uci_datasets = ['dry-bean','academic-success','digits'] #,'letter']
+    uci_datasets = ['dry-bean','academic-success'] #,'digits'] #,'letter']
     
     for dataset_name in uci_datasets:
         
@@ -80,11 +80,12 @@ if __name__ == '__main__':
             else:
                 rep = RepresentationLearningQuantification(phi, "fro")
             rep.fit(train)
-            p_hat = rep.quantify(test.X)
+            """p_hat = rep.quantify(test.X)
             print(f"{name} for {dataset_name}:")
             print("MRAE", qp.error.mrae(test.prevalence(), p_hat))
-            print("MAE", qp.error.mae(test.prevalence(), p_hat))
-        
+            print("MAE", qp.error.mae(test.prevalence(), p_hat))"""
+            report = qp.evaluation.evaluation_report(rep, UPP(test, repeats=1000),error_metrics=["mrae", "mae"])
+            print(report["mrae"].mean())
         
         ## QUAPY ##
         """param_grid = {

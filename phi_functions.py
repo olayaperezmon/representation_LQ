@@ -64,7 +64,8 @@ class PhiHDy(Phi):
             for i in range(self.n_classes):
                 bin_index = np.digitize(p[i], bins) - 1
                 hist[i, bin_index] = hist[i, bin_index] + 1
-        return hist/pred.shape[0]
+        res = hist/pred.shape[0]
+        return res.flatten()
 
 class Phi_most_voted(Phi):
 
@@ -142,7 +143,6 @@ class Phi_Z_score(Phi):
 
     def fit(self, X, y):
         self.scaler.fit(X)
-        
         return self
         
     def transform(self, X):
