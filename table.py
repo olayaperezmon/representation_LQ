@@ -15,10 +15,6 @@ class Format:
     meanrank_prec: int = 1
     meanrank_std_prec: int = 1
     show_std: bool = True
-    small_std: bool = False
-    rel_reduction_wrt: str = None
-    rel_increment_wrt: str = None
-    rel_val_prec:int = 2
     remove_zero: bool = False
     color: bool = True
     maxtone: int = 40
@@ -35,14 +31,14 @@ class Format:
 
 class Cell:
 
-    def __init__(self, format: Format, local_group: 'CellGroup', global_group: 'CellGroup', benchmark: str, method: str):
+    def __init__(self, format: Format, local_group: 'CellGroup', global_group: 'CellGroup'):
         self.values = []
         self.format = format
         self.touch()
         self.local_group = local_group
-        self.local_group.register_cell(self, method)
+        self.local_group.register_cell(self)
         self.global_group = global_group
-        self.global_group.register_cell(self, method)
+        self.global_group.register_cell(self)
 
     def __len__(self):
         return len(self.values)
@@ -104,25 +100,8 @@ class Cell:
         # ---------------------------------------------------
         if self.format.show_std:
             std = f'$\pm${whitespace}{self.std():.{self.format.std_prec}f}'
-            if self.format.small_std:
-                std = '\\scriptsize{' + std + '}'
         else:
             std = ''
-
-        # relative reduction ?
-        # ---------------------------------------------------
-        if self.format.rel_reduction_wrt is not None:
-            wrt = self.format.rel_reduction_wrt
-            relative_str = "(?)"
-            if wrt in self.local_group.cells and not self.local_group.cells[wrt].isEmpty() and not self.isEmpty():
-                wrt_cell = self.local_group.cells[wrt]
-                wrt_value = wrt_cell.mean()
-                mean_value = self.mean()
-                relative = 100-100*(wrt_value-mean_value)/wrt_value
-                relative_str = f'({relative:.{self.format.rel_val_prec}f})'
-        else:
-            relative_str = ''
-
 
         # bold or statistical test
         # ---------------------------------------------------
@@ -138,7 +117,7 @@ class Cell:
                     comp_symbol = '$^{\dag}$'
                 elif pval >= 0.01:
                     comp_symbol = '$^{\ddag}$'
-            str_cell = f'{mean}{comp_symbol}{std} {relative_str}'
+            str_cell = f'{mean}{comp_symbol}{std}'
 
         # color ?
         # ---------------------------------------------------
@@ -160,13 +139,13 @@ class CellGroup:
         # if (format.color_global_min is not None or format.color_global_max is not None) and format.color_mode=='local':
         #     print('warning: color_global_min and color_global_max are only considered when color_mode==local')
         self.format = format
-        self.cells = {}
+        self.cells = []
 
-    def register_cell(self, cell: Cell, method: str):
-        self.cells[method] = cell
+    def register_cell(self, cell: Cell):
+        self.cells.append(cell)
 
     def non_empty_cells(self):
-        return [c for c in self.cells.values() if not c.isEmpty()]
+        return [c for c in self.cells if not c.isEmpty()]
 
     def max(self):
         cells = self.non_empty_cells()
@@ -252,7 +231,7 @@ class CellGroup:
         if cell.isEmpty():
             return None
         cell_mean = cell.mean()
-        all_means = [c.mean() for c in self.cells.values()]
+        all_means = [c.mean() for c in self.cells]
         # all_means.append(cell_mean)
         all_means = set(all_means)  # remove duplicates so that ties receive the same rank
         all_means = [x for x in all_means if not np.isnan(x)]  # remove nan
@@ -280,7 +259,7 @@ class Table:
         #     self.format.color_global_max = None
 
         self.T = {}
-        self.by_bench_groups = {}
+        self.groups = {}
         self.global_group = self._new_group()
         self.left_frame = None
 
@@ -309,21 +288,15 @@ class Table:
     def get(self, benchmark, method) -> Cell:
         if benchmark not in self.benchmarks:
             self.benchmarks.append(benchmark)
-        if benchmark not in self.by_bench_groups:
-            self.by_bench_groups[benchmark] = self._new_group()
+        if benchmark not in self.groups:
+            self.groups[benchmark] = self._new_group()
         if method not in self.methods:
             self.methods.append(method)
         b_idx = self.benchmarks.index(benchmark)
         m_idx = self.methods.index(method)
         idx = tuple((b_idx, m_idx))
         if idx not in self.T:
-            self.T[idx] = Cell(
-                self.format,
-                local_group=self.by_bench_groups[benchmark],
-                global_group=self.global_group,
-                benchmark=benchmark,
-                method=method
-            )
+            self.T[idx] = Cell(self.format, local_group=self.groups[benchmark], global_group=self.global_group)
         cell = self.T[idx]
         return cell
 
@@ -346,7 +319,7 @@ class Table:
         mean_global_group = self._new_group()
         cells = []
         for method in method_order:
-            method_mean = Cell(self.format, local_group=mean_group, global_group=mean_global_group, benchmark='', method=method)
+            method_mean = Cell(self.format, local_group=mean_group, global_group=mean_global_group)
             leave_empty = False
             for bench in self.get_benchmarks():
                 mean_value = self.get_mean_value(benchmark=bench, method=method)
@@ -357,7 +330,7 @@ class Table:
                 if leave_empty:
                     break
             if leave_empty:
-                cells.append(Cell(self.format, local_group=mean_group, global_group=mean_global_group, benchmark='', method=method))
+                cells.append(Cell(self.format, local_group=mean_group, global_group=mean_global_group))
             else:
                 cells.append(method_mean)
         return cells
@@ -370,7 +343,7 @@ class Table:
             rankmean_format = replace(self.format)
             rankmean_format.mean_prec = self.format.meanrank_prec
             rankmean_format.std_prec = self.format.meanrank_std_prec
-            method_rank_mean = Cell(format=rankmean_format, local_group=rank_mean_group, global_group=rank_global_group, benchmark='', method=method)
+            method_rank_mean = Cell(format=rankmean_format, local_group=rank_mean_group, global_group=rank_global_group)
             leave_empty = False
             for bench in self.get_benchmarks():
                 rank = self.get(benchmark=bench, method=method).rank()
@@ -381,7 +354,7 @@ class Table:
                 if leave_empty:
                     break
             if leave_empty:
-                cells.append(Cell(self.format, local_group=rank_mean_group, global_group=rank_global_group, benchmark='', method=method))
+                cells.append(Cell(self.format, local_group=rank_mean_group, global_group=rank_global_group))
             else:
                 cells.append(method_rank_mean)
         return cells
@@ -421,11 +394,9 @@ class Table:
         if transpose:
             row_order, row_replace = method_order, method_replace
             col_order, col_replace = benchmark_order, benchmark_replace
-            ncols = self.n_benchmarks()+1
         else:
             row_order, row_replace = benchmark_order, benchmark_replace
             col_order, col_replace = method_order, method_replace
-            ncols = self.n_methods() + 1
 
         n_cols = len(col_order)
         add_mean_col = self.format.with_mean and transpose
@@ -518,9 +489,6 @@ class Table:
 
         lines.append('\\end{tabular}')
 
-        if self.left_frame is not None:
-            self._add_left_frame(lines, ncols)
-
         tabular_tex = '\n'.join(lines)
 
         if path is not None:
@@ -531,42 +499,6 @@ class Table:
                 foo.write(tabular_tex)
 
         return tabular_tex
-
-    def _add_left_frame(self, lines, ncols):
-        if self.format.style != 'rules':
-            raise NotImplementedError('the current variant only works for style="rules"')
-
-        label = self.left_frame
-        # adds |c to header (lines[0])
-        if self.format.style!='rules':
-            lines[0] = lines[0].replace('{tabular}{', '{tabular}{|c')
-        else:
-            lines[0] = lines[0].replace('{tabular}{', '{tabular}{c')
-
-        # increase by 1 the first clines (depends on style) and adapts the hline before average
-        if lines[1].startswith('\\cline'):
-            from_, to_ = lines[1].replace('\\cline{', '').replace('}','').split('-')
-            from_ = int(from_)+1
-            to_ = int(to_) + 1
-            lines[1] = f'\\cline{{{from_}-{to_}}}'
-
-        if lines[-4].endswith('\midrule'):
-            lines[-4] = lines[-4].replace('\midrule', f'\cmidrule(lr){{{2}-{ncols+1}}}')
-
-        elif lines[-4].endswith('\hline'):
-            lines[-4] = lines[-4].replace('\hline', f'\\cline{{{from_-1}-{to_}}}')
-
-        # adds another \multicolumn{1}{c}{} first line
-        lines[2] = '\multicolumn{1}{c}{} & ' + lines[2]
-
-        # adds \\multirow{NB}{*}{\rotatebox[origin=c]{90}{label}} &
-        # to the second line (NB=number of benchmarks, label=left_frame_label)
-        num_rows = len(lines) - 4  # 4 lines are: begin-tabular, top line, header, and end-tabular
-        lines[3] = f'\multirow{{{num_rows}}}{{*}}{{ \\rotatebox[origin=c]{{90}}{{ {label} }}}} & ' + lines[3]
-
-        # adds & to the rest of the lines
-        for i in range(4, len(lines)-1):
-            lines[i] = ' & ' + lines[i]
 
     def table(self, tabular_path, benchmark_replace=None, method_replace=None, resizebox=True, caption=None, label=None, benchmark_order=None, method_order=None, transpose=False):
         if benchmark_replace is None:
@@ -617,7 +549,6 @@ class Table:
         lines.append('\\usepackage{xcolor}')
         lines.append('\\usepackage{colortbl}')
         lines.append('\\usepackage{booktabs}')
-        lines.append('\\usepackage{multirow}')
         if landscape:
             lines.append('\\usepackage[landscape]{geometry}')
         lines.append('')
