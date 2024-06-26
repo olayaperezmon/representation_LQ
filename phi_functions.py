@@ -178,8 +178,8 @@ class Phi_classifiers_combination(Phi):
             self.accs = [np.mean(cross_val_score(c, X, y, n_jobs=-1)) for c in self.classifiers]
         else:
             self.accs = [1] * len(self.classifiers)
-        self.accs = np.asarray(self.accs)
-        self.accs /= self.accs.sum()
+        self.accs = np.asarray(self.accs, dtype='float64')
+        self.accs /= self.accs.sum(dtype='float64')
 
         for c in self.classifiers:
             c.fit(X, y)
