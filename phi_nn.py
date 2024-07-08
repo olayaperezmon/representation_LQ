@@ -16,10 +16,27 @@ import wandb
 from sklearn.linear_model import LogisticRegression
 from scipy.spatial import distance
 import matplotlib.pyplot as plt
-import imageio
+# import imageio
 import pandas as pd
 import os
 import json
+
+
+use_classification_loss = False
+use_error_signal = False
+use_autoencoder = False
+use_triplet_loss = False
+
+# use_classification_loss = True
+# use_error_signal = True
+# use_autoencoder = True
+use_triplet_loss = True
+
+show_lr = False
+
+# wand config
+use_wandb = False
+wandb_execution_name = "phi_nn_autoencoder_M_error"
 
 
 class RepresentationLearningQuantification(BaseQuantifier, ABC):
@@ -57,8 +74,12 @@ class PhiPequena(nn.Module):
         self.module.add_module("relu_1", nn.ReLU())
         self.module.add_module("last_linear", nn.Linear(X_shape*2, 10))
 
+    def dimensions(self):
+        return self.module.last_linear.out_features
+
     def forward(self, x):
         return self.module(x)
+
 
 class PhiPequena_decoder(nn.Module):
     def __init__(self, X_shape, last_linear_shape):
@@ -118,23 +139,23 @@ class EarlyStopping:
             self.best_score = score
             self.counter = 0
 
-def save_image(q, M_prev, M_prev_contr, k, i):
-    fig = plt.figure()
-    ax = fig.add_subplot(111, projection='3d')
-    
-    ax.scatter(q[0], q[1], q[2], c='r', marker='o', label='q', s=100)
-    ax.scatter(M_prev[0], M_prev[1], M_prev[2], c='g', marker='^', label='M@prev', s=100)
-    ax.scatter(M_prev_contr[0], M_prev_contr[1], M_prev_contr[2], c='b', marker='s', label='M@prev_contr', s=100)
-
-    max(q[0], M_prev[0], M_prev_contr[0])
-    ax.set_xlim([min(q[0], M_prev[0], M_prev_contr[0])-0.2, max(q[0], M_prev[0], M_prev_contr[0])+0.2])
-    ax.set_ylim([min(q[1], M_prev[1], M_prev_contr[1])-0.2, max(q[1], M_prev[1], M_prev_contr[1])+0.2])
-    ax.set_zlim([min(q[2], M_prev[2], M_prev_contr[2])-0.2, max(q[2], M_prev[2], M_prev_contr[2])+0.2])
-    ax.set_title(f"Age:{k} Epoch:{i}")
-
-    ax.legend()
-    plt.savefig(f'images_academicsuc/age_{k}_epoch_{i}.png')
-    plt.close()
+# def save_image(q, M_prev, M_prev_contr, k, i):
+#     fig = plt.figure()
+#     ax = fig.add_subplot(111, projection='3d')
+#
+#     ax.scatter(q[0], q[1], q[2], c='r', marker='o', label='q', s=100)
+#     ax.scatter(M_prev[0], M_prev[1], M_prev[2], c='g', marker='^', label='M@prev', s=100)
+#     ax.scatter(M_prev_contr[0], M_prev_contr[1], M_prev_contr[2], c='b', marker='s', label='M@prev_contr', s=100)
+#
+#     max(q[0], M_prev[0], M_prev_contr[0])
+#     ax.set_xlim([min(q[0], M_prev[0], M_prev_contr[0])-0.2, max(q[0], M_prev[0], M_prev_contr[0])+0.2])
+#     ax.set_ylim([min(q[1], M_prev[1], M_prev_contr[1])-0.2, max(q[1], M_prev[1], M_prev_contr[1])+0.2])
+#     ax.set_zlim([min(q[2], M_prev[2], M_prev_contr[2])-0.2, max(q[2], M_prev[2], M_prev_contr[2])+0.2])
+#     ax.set_title(f"Age:{k} Epoch:{i}")
+#
+#     ax.legend()
+#     plt.savefig(f'images_academicsuc/age_{k}_epoch_{i}.png')
+#     plt.close()
 
 def save_json(q, M_prev, M_prev_contr):
     data_dict = {
@@ -148,19 +169,62 @@ def save_json(q, M_prev, M_prev_contr):
         f.write('\n')
     
 
+def triplet_loss(prev, examples_prev_contr=50, mode='max'):
+    # TRIPLET LOSS: min(|q - M@prev| - |q - M@prev_constr|)
+    vect_matrix = qp.functional.uniform_prevalence_sampling(n_classes=num_classes, size=examples_prev_contr)
+    p_aux = prev.reshape((1, -1))
+    dist = distance.cdist(vect_matrix, p_aux, 'minkowski', p=1)
+
+    if mode == 'max':
+        ind = np.argmax(dist)
+    elif mode == 'median':
+        dist_sorted = np.stack(sorted(dist))
+        ind = np.where(dist == dist_sorted[examples_prev_contr//2])[0][0]
+    else:
+        raise ValueError(f'unknown {mode=}')
+
+    prev_contr = torch.tensor(vect_matrix[ind], dtype=torch.float32)
+    prev = torch.tensor(prev, dtype=torch.float32)
+
+    positive_dist = F.pairwise_distance(q, M@prev, p=2)
+    negative_dist = F.pairwise_distance(q, M@prev_contr, p=2)
+
+    factor = 1 #positive_dist.detach().numpy()/(2*negative_dist.detach().numpy())
+    loss_triplet = positive_dist - factor*negative_dist
+    return loss_triplet
+
+
+class LossStr:
+    def __init__(self):
+        self.loss_str = []
+
+    def add(self, loss, name):
+        self.loss_str.append(f'{name}={loss.detach().numpy():.6f}')
+
+    def __repr__(self):
+        return '\t'.join(self.loss_str)
+
+
+def show_evaluation(train, test, repeats=100, prefix=''):
+    rep = RepresentationLearningQuantification(phi_grande.eval(), "fro")
+    rep.fit(train)
+    report = qp.evaluation.evaluation_report(rep, UPP(test, repeats=repeats), error_metrics=["mrae", "mae"])
+    RAE = np.mean(report["mrae"].values)
+    AE = np.mean(report["mae"].values)
+    print(f'\t{prefix} : {RAE=:.5f}\t{AE=:.5f}')
+    return RAE
+
+
 torch.manual_seed(2032)
 np.random.seed(2032)
 random.seed(2032)
 
-use_wandb = False
-use_classification_loss = False
-use_autoencoder = False
-show_lr = False
-wandb_execution_name = "phi_nn_autoencoder_M_error"
+
 
 if __name__ == '__main__':
-    qp.environ['SAMPLE_SIZE'] = 250
-    datasets = ['letter'] #['dry-bean','academic-success','digits','letter'] #, 'T1A'] 
+    qp.environ['SAMPLE_SIZE'] = 500
+    datasets = ['dry-bean'] #['dry-bean','academic-success','digits','letter'] #, 'T1A']
+    max_classes = 5
 
     table_ae = Table(name='mae')
     table_rae = Table(name='mrae')
@@ -186,41 +250,48 @@ if __name__ == '__main__':
 
         #print(f'{len(train)=} {len(test)=}')
         
-        train, val = train.split_stratified(train_prop=0.6)
+        train, val = train.split_stratified(train_prop=0.8)
         num_classes = len(train.classes_)
-
 
         def gen_M(data, phi_grande):
             M = []
-            phi_X = []
-            y = []
-            X = []
+            phi_Xs = []
+            ys = []
+            Xs = []
             for i in data.classes_:
-                X_i = torch.tensor(data.X[data.y==i], dtype=torch.float32)
-                phi_gr, phi_peqs = phi_grande(X_i)
-                X.append(X_i)
-                M.append(phi_gr)
-                phi_X.append(phi_peqs)
-                y.append(torch.full(size=(np.sum(data.y == i),), fill_value= i))
-            M = torch.stack(M).T 
-            phi_X = torch.concat(phi_X)
-            X = torch.concat(X)
-            y = torch.concat(y)
-            return M, phi_X, X, y
+                sel=data.y==i
+                Xi = torch.tensor(data.X[sel], dtype=torch.float32)
+                Phi_Xi, phi_Xi = phi_grande(Xi)
+                Xs.append(Xi)
+                M.append(Phi_Xi)
+                phi_Xs.append(phi_Xi)
+                ys.append(torch.full(size=(np.sum(sel),), fill_value= i))
+            M = torch.stack(M).T
+            phi_Xs = torch.concat(phi_Xs)
+            Xs = torch.concat(Xs)
+            ys = torch.concat(ys)
+
+            if use_error_signal:
+                M = M+e
+
+            return M, phi_Xs, Xs, ys
+
 
         n_feat = train.X.shape[1]
         phi_pequena = PhiPequena(n_feat)
-        last_linear_shape = phi_pequena.module.last_linear.out_features
-        phi_pequena_decoder = PhiPequena_decoder(n_feat, last_linear_shape)
-        e = nn.Parameter(torch.normal(mean=0.0, std=0.5, size=(last_linear_shape, num_classes)), requires_grad=True)
+        latent_dims = phi_pequena.dimensions()
+        phi_pequena_decoder = PhiPequena_decoder(n_feat, latent_dims)
+        e = nn.Parameter(torch.normal(mean=0.0, std=0.5, size=(latent_dims, num_classes)), requires_grad=True)
 
+        # params configuration
+        params = list(phi_pequena.parameters())
         if use_classification_loss:
-            linear_classif = nn.Linear(last_linear_shape, num_classes) 
-            params = list(phi_pequena.parameters()) + list(linear_classif.parameters())
-        elif use_autoencoder: 
-            params = list(phi_pequena.parameters()) + list(phi_pequena_decoder.parameters()) + [e]
-        else: 
-            params = list(phi_pequena.parameters()) + [e]
+            linear_classif = nn.Linear(latent_dims, num_classes)
+            params += list(linear_classif.parameters())
+        if use_autoencoder:
+            params += list(phi_pequena_decoder.parameters())
+        if use_error_signal:
+            params += [e]
 
         optimizer = optim.Adam(params, lr=0.01) #, weight_decay=0.0001)
         
@@ -233,13 +304,12 @@ if __name__ == '__main__':
         n_ages = 1000
         phi_grande = PhiGrande(phi_pequena)
         mse_loss = nn.MSELoss()
-        loss_dec = None
-        
-        
+        # loss_dec = None
+
         for age in range(n_ages):
             LM, Lq = train.split_stratified(train_prop=0.5)
             
-            n_epochs = 20
+            n_epochs = 5
             sample_size = random.randint(100, 500)
             for epoch in range(n_epochs):
                 upp_gen = UPP(Lq, sample_size=sample_size, random_state=None, return_type="sample_prev")
@@ -251,72 +321,77 @@ if __name__ == '__main__':
                     sam = torch.tensor(sam, dtype=torch.float32)
                     q, Xq = phi_grande(sam)
                     
-                    # TRIPLET LOSS: min(|q - M@prev| - |q - M@prev_constr|)
-                    """examples_prev_contr = 100
-                    vect_matrix = qp.functional.uniform_prevalence_sampling(n_classes = num_classes, size= examples_prev_contr)
-                    p_aux = prev.reshape((1, -1))
-                    dist = distance.cdist(vect_matrix, p_aux, 'minkowski', p=1)
-                    #ind = np.argmax(dist)
-                    
-                    dist_sorted = np.stack(sorted(dist))
-                    ind = np.where(dist == dist_sorted[examples_prev_contr//2])[0][0]
+                    # prev = torch.tensor(prev, dtype=torch.float32)
+                    # loss_quant =  torch.norm(M@prev - q)
+                    # loss_quant_error = torch.norm((M+e)@prev - q)
 
-                    prev_contr = torch.tensor(vect_matrix[ind], dtype=torch.float32)
-                    prev = torch.tensor(prev, dtype=torch.float32)
-                    
-                    positive_dist = F.pairwise_distance(q, M@prev, p=2)
-                    negative_dist = F.pairwise_distance(q, M@prev_contr, p=2)
-
-                    factor = 1 #positive_dist.detach().numpy()/(2*negative_dist.detach().numpy())
-                    loss_triplet = positive_dist - factor*negative_dist
-                    loss_contr = torch.norm(M@prev_contr - q)"""
-
-                    prev = torch.tensor(prev, dtype=torch.float32)
-                    loss_quant =  torch.norm(M@prev - q)
-                    loss_quant_error = torch.norm((M+e)@prev - q)
-                    loss_e = torch.norm(e)
                     #print("e", e)
                     # LOSS DECODER : reconstruir X usando phi_pequeña_decoder
+
+                    loss = 0
+                    loss_str = LossStr()
+
                     if use_autoencoder:
-                        phi_x_hat = phi_pequena_decoder(phi_X)
-                        loss_decoder = mse_loss(phi_x_hat, X)
-                        if loss_dec == None: 
-                            loss_dec = loss_decoder.detach().numpy()
-                    
+                        phi_X_hat = phi_pequena_decoder(phi_X)
+                        loss_autoencoder = mse_loss(phi_X_hat, X)
+                        loss_str.add(loss_autoencoder, 'autoencoder')
+                        loss += loss_autoencoder
 
                     if use_classification_loss:      
-                        loss_classif = regularization_classif(phi_X, y, linear_classif) 
-                        # loss = loss_classif + loss_quant
-                        #loss = (1-(weight_index/tot_index))*loss_classif+(weight_index/tot_index)*loss_rec
-                    
-                    if use_autoencoder: 
-                        loss =  loss_quant_error +  0.01*loss_e
-                    else: 
-                        loss = loss_quant
+                        loss_classif = regularization_classif(phi_X, y, linear_classif)
+                        loss_str.add(loss_classif, 'classif')
+                        loss += loss_classif
+
+                    if use_error_signal:
+                        loss_e = torch.norm(e)
+                        loss_str.add(loss_e, 'error')
+                        loss += loss_e
+
+                    if use_triplet_loss:
+                        triplet = triplet_loss(prev, examples_prev_contr=50, mode='max')
+                        loss_str.add(triplet, 'triplet')
+                        loss += triplet
+
+                    loss_str.add(loss, 'total')
                     
                     optimizer.zero_grad()
                     loss.backward()
                     optimizer.step()
 
-                rep = RepresentationLearningQuantification(phi_grande.eval(), "fro")
-                rep.fit(LM)
-                report = qp.evaluation.evaluation_report(rep, UPP(Lq, repeats=100), error_metrics=["mrae", "mae"])
-                loss_train_rae = np.mean(report["mrae"].values)
-                loss_train_ae = np.mean(report["mae"].values)
+
+
+                # rep = RepresentationLearningQuantification(phi_grande.eval(), "fro")
+                # rep.fit(LM)
+                # report = qp.evaluation.evaluation_report(rep, UPP(Lq, repeats=100), error_metrics=["mrae", "mae"])
+                # loss_train_rae = np.mean(report["mrae"].values)
+                # loss_train_ae = np.mean(report["mae"].values)
                 #print(f'MRAE={loss_train_rae:.6f}\tMAE={loss_train_ae:.6f}')
 
-                print(f'Age {age+1}/{n_ages} : Epoch {epoch+1}/{n_epochs}, Loss: {loss.item():.5f}\t{loss_quant=:.5f}\t{loss_quant_error=:.5f}\t{loss_e=:.5f}')
+                # print(f'Age {age+1}/{n_ages} : Epoch {epoch+1}/{n_epochs}, Loss: {loss.item():.5f}\t{loss_quant=:.5f}\t{loss_quant_error=:.5f}\t{loss_e=:.5f}')
+                print(f'Age {age + 1}/{n_ages} : Epoch {epoch + 1}/{n_epochs}, Loss: {loss_str}')
+
                 #print(f'Age {age+1}/{n_ages} : Epoch {epoch+1}/{n_epochs}, Loss: {loss.item():.5f}\t{loss_quant=:.5f}\t{loss_train_rae=:.5f}\t{loss_train_ae=:.5f}\t{loss_triplet=:.5f}')
                 #save_json(q.detach().numpy(), (M@prev).detach().numpy(), (M@prev_contr).detach().numpy())
                 #save_image(q.detach().numpy(), (M@prev).detach().numpy(), (M@prev_contr).detach().numpy(), age, epoch)
 
-            LM_val, Lq_val = val.split_stratified(train_prop=0.5)
-            rep = RepresentationLearningQuantification(phi_grande.eval(), "fro")
-            rep.fit(LM_val)
-            report = qp.evaluation.evaluation_report(rep, UPP(Lq_val, repeats=200), error_metrics=["mrae", "mae"])
-            loss_val_rae = np.mean(report["mrae"].values)
-            loss_val_ae = np.mean(report["mae"].values)
-            print(f'VAL MRAE={loss_val_rae:.6f}\tMAE={loss_val_ae:.6f}')
+
+            # LM_val, Lq_val = val.split_stratified(train_prop=0.5)
+            # rep = RepresentationLearningQuantification(phi_grande.eval(), "fro")
+            # rep.fit(LM_val)
+            # report = qp.evaluation.evaluation_report(rep, UPP(Lq_val, repeats=200), error_metrics=["mrae", "mae"])
+            # loss_val_rae = np.mean(report["mrae"].values)
+            # loss_val_ae = np.mean(report["mae"].values)
+            # print(f'VAL MRAE={loss_val_rae:.6f}\tMAE={loss_val_ae:.6f}')
+
+            show_evaluation(LM, Lq, prefix='Training')
+            RAE_val = show_evaluation(train, val, prefix='Validation')
+            show_evaluation(train+val, test, prefix='Test')
+            # rep = RepresentationLearningQuantification(phi_grande.eval(), "fro")
+            # rep.fit(train)
+            # report = qp.evaluation.evaluation_report(rep, UPP(val, repeats=100), error_metrics=["mrae", "mae"])
+            # loss_val_rae = np.mean(report["mrae"].values)
+            # loss_val_ae = np.mean(report["mae"].values)
+            # print(f'VAL MRAE={loss_val_rae:.6f}\tMAE={loss_val_ae:.6f}')
 
             if show_lr: 
                 decision_func = logr.decision_function(val.X)
@@ -328,10 +403,10 @@ if __name__ == '__main__':
                 ## PARA TRIPLET LOSS:
                 #wandb.log({"train_loss": loss.item(), "val_loss": loss_val, "loss_contr": loss_contr, "loss_qunat": loss_quant}, step=age)
                 ## PARA LOSS ENCODER-DECODER:
-                wandb.log({"train_loss": loss.item(), "val_loss": loss_val_rae, "loss_qunat": loss_quant, "loss_quant_error": loss_quant_error, "loss_decoder": loss_decoder, "train_loss_RAE": loss_train_rae, "train_loss_AE": loss_train_ae}, step=age)
+                wandb.log({"train_loss": loss.item(), "val_loss": loss_val_rae, "loss_qunat": loss_quant, "loss_quant_error": loss_quant_error, "loss_decoder": loss_autoencoder, "train_loss_RAE": loss_train_rae, "train_loss_AE": loss_train_ae}, step=age)
                 #wandb.log({"train_loss": loss.item(), "val_loss": loss_val_rae, "val_loss_AE": loss_val_ae, "loss_qunat": loss_quant, "train_loss_RAE": loss_train_rae, "train_loss_AE": loss_train_ae, "triplet loss": loss_triplet, "loss contr": loss_contr}, step=age)
 
-            early_stopping(loss_val_rae)
+            early_stopping(RAE_val)
             if early_stopping.early_stop:
                 print("Early stopping")
                 break
