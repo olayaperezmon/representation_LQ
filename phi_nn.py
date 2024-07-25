@@ -17,12 +17,6 @@ from sklearn.linear_model import LogisticRegression
 from scipy.spatial import distance
 import json
 import warnings
-
-TOCUDA=False
-TOCUDA=True
-
-
-
 warnings.simplefilter("ignore")
 
 
@@ -33,23 +27,11 @@ use_triplet_loss = False
 use_attention = False
 use_regressor = False
 
-# use_classification_loss = True
-# use_autoencoder = True
-# use_attention = True
-# use_triplet_loss = True
+#use_classification_loss = True
+use_autoencoder = True
+#use_attention = True
+use_triplet_loss = True
 use_regressor = True
-
-if TOCUDA:
-    torch.set_default_tensor_type(torch.cuda.FloatTensor)
-
-HIDDEN = 100
-NUM_TR_CLASS = 100
-
-def detach(tensor):
-    if TOCUDA:
-        return tensor.detach().cpu()
-    else:
-        return tensor.detach()
 
 show_lr = False
 
@@ -73,7 +55,7 @@ class RepresentationLearningQuantification(BaseQuantifier, ABC):
         #Frobenius Distance
         if self.solver == "fro":
             def loss(p):
-                return np.linalg.norm(detach(self.M).numpy() @ p - detach(q).numpy())
+                return np.linalg.norm(self.M.detach().numpy() @ p - q.detach().numpy())
         
         #Hellinger Distance
         elif self.solver == "HD":
@@ -89,11 +71,9 @@ class PhiPequena(nn.Module):
     def __init__(self, X_shape):
         super(PhiPequena, self).__init__()
         self.module = torch.nn.Sequential()
-        self.module.add_module("linear_1", nn.Linear(X_shape, HIDDEN*2))
+        self.module.add_module("linear_1", nn.Linear(X_shape, X_shape*2))
         self.module.add_module("relu_1", nn.ReLU())
-        self.module.add_module("linear_2", nn.Linear(HIDDEN*2, HIDDEN*2))
-        self.module.add_module("relu_2", nn.ReLU())
-        self.module.add_module("last_linear", nn.Linear(HIDDEN*2, HIDDEN))
+        self.module.add_module("last_linear", nn.Linear(X_shape*2, X_shape//2))
 
     def dimensions(self):
         return self.module.last_linear.out_features
@@ -101,18 +81,16 @@ class PhiPequena(nn.Module):
     def forward(self, x):
         return self.module(x)
 
-
 class PhiPequena_decoder(nn.Module):
     def __init__(self, X_shape, last_linear_shape):
         super(PhiPequena_decoder, self).__init__()
         self.module = torch.nn.Sequential()
-        self.module.add_module("linear_1_dec", nn.Linear(last_linear_shape, HIDDEN*2))
+        self.module.add_module("linear_1_dec", nn.Linear(last_linear_shape, X_shape*2))
         self.module.add_module("relu_1_dec", nn.ReLU())
-        self.module.add_module("linear_2_dec", nn.Linear(HIDDEN*2, X_shape))
+        self.module.add_module("linear_2_dec", nn.Linear(X_shape*2, X_shape))
 
     def forward(self, x):
         return self.module(x)
-
 
 class PhiGrande(nn.Module):
     def __init__(self, phi_pequena, use_attention):
@@ -124,27 +102,23 @@ class PhiGrande(nn.Module):
     def forward(self, X):
         X = self.phi_pequena(X)
         mean = torch.mean(X, dim=0)
-        mean = F.normalize(mean, p=2, dim=0)
         if use_attention: 
             att = F.softmax(self.attention)
             mean_att = torch.mul(mean, att)
-            # return F.normalize(mean_att, p=2, dim=0), X
-            return mean_att, X
+            return F.normalize(mean_att, p=2, dim=0), X 
         else: 
             return F.normalize(mean, p=2, dim=0), X
-
 
 class Regressor_Mq(nn.Module):
     def __init__(self, input_dim, output_dim):
         super(Regressor_Mq, self).__init__()
         self.module = torch.nn.Sequential()
-        self.module.add_module("linear_1", nn.Linear(input_dim, HIDDEN))
+        self.module.add_module("linear_1", nn.Linear(input_dim, input_dim//2))
         self.module.add_module("relu_1", nn.ReLU())
-        self.module.add_module("linear_2", nn.Linear(HIDDEN, output_dim))
+        self.module.add_module("linear_2", nn.Linear(input_dim//2, output_dim))
 
     def forward(self, x):
         return F.softmax(self.module(x))
-
 
 def cosine_distance(x1, eps=1e-8):
     w1 = x1.norm(p=2, dim=0, keepdim=True)
@@ -152,7 +126,7 @@ def cosine_distance(x1, eps=1e-8):
 
 def regularization_classif(X, y, linear_clas):
     X = linear_clas(X)
-    cr_en_loss = nn.CrossEntropyLoss(label_smoothing=0.05)
+    cr_en_loss = nn.CrossEntropyLoss()
     loss = cr_en_loss(X, y)
     return loss
 
@@ -224,7 +198,7 @@ class LossStr:
         self.losses = defaultdict(lambda :[])
 
     def add(self, loss, name):
-        loss_ = detach(loss).numpy()
+        loss_ = loss.detach().numpy()
         self.losses[name].append(loss_)
         self.losses[name] = self.losses[name][-self.history:] 
 
@@ -324,9 +298,9 @@ if __name__ == '__main__':
         if use_regressor:
             params += list(regressor.parameters())
 
-        optimizer = optim.Adam(params, lr=0.01, weight_decay=0.0001)
+        optimizer = optim.Adam(params, lr=0.001) #, weight_decay=0.0001)
         
-        early_stopping = EarlyStopping(patience=300)
+        early_stopping = EarlyStopping(patience=30)
         
         if show_lr:
             logr = LogisticRegression(max_iter=1000)
@@ -337,13 +311,11 @@ if __name__ == '__main__':
         # loss_dec = None
         loss_str = LossStr()
         for age in range(n_ages):
+            LM, Lq = train.split_stratified(train_prop=0.5)
             
             n_epochs = 5
-            sample_size = 50 # random.randint(100, 500)
+            sample_size = random.randint(100, 500)
             for epoch in range(n_epochs):
-                LM, Lq = train.split_stratified(train_prop=0.5)
-                LM = LM.sampling(NUM_TR_CLASS * LM.n_classes)
-
                 upp_gen = UPP(Lq, sample_size=sample_size, random_state=None, return_type="sample_prev")
                 for i, (sam, prev) in enumerate(upp_gen()):
                     phi_pequena.train()
