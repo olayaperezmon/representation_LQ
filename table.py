@@ -14,8 +14,8 @@ class Format:
     std_prec: int = 3
     meanrank_prec: int = 1
     meanrank_std_prec: int = 1
-    show_std: bool = True
-    remove_zero: bool = False
+    show_std: bool = False 
+    remove_zero: bool = True #.0
     color: bool = True
     maxtone: int = 40
     style: str = 'minimal'
@@ -387,9 +387,9 @@ class Table:
         if method_replace is None:
             method_replace = {}
         if benchmark_order is None:
-            benchmark_order = self.get_benchmarks()
+            benchmark_order = sorted(self.get_benchmarks())
         if method_order is None:
-            method_order = self.get_methods()
+            method_order = sorted(self.get_methods())
 
         if transpose:
             row_order, row_replace = method_order, method_replace
@@ -441,7 +441,7 @@ class Table:
         lines.append(toprule)
 
         l = corner
-        l += ' & '.join([col_replace.get(col, col) for col in col_order])
+        l += ' & '.join([col_replace.get(col, col.replace("_", "\_")) for col in col_order])
         if add_mean_col:
             l += ' & ' + average_label
         l += midrule
@@ -455,7 +455,7 @@ class Table:
         # col_width = printed_lengths.max(axis=0)
 
         for i, row in enumerate(row_order):
-            rowname = row_replace.get(row, row)
+            rowname = row_replace.get(row, row.replace("_", "\_"))
             l = rowname + ' & '
             l += ' & '.join([
                 self.get(benchmark=col if transpose else row, method=row if transpose else col).print()
@@ -510,7 +510,7 @@ class Table:
         lines.append('\\begin{table}[h]')
         lines.append('\center')
         if resizebox:
-            lines.append('\\resizebox{\\textwidth}{!}{%')
+            lines.append('\\resizebox{0.8\\textwidth}{!}{%')
 
         tabular_str = self.tabular(tabular_path, benchmark_replace, method_replace, benchmark_order, method_order, transpose)
         if tabular_path is None:
@@ -538,9 +538,9 @@ class Table:
         return Table.LatexPDF(pdf_path, tables=[self], tabular_dir=tabular_dir, *args, **kwargs)
 
     @classmethod
-    def Document(self, tex_path, tables:List['Table'], tabular_dir='tables', landscape=True, dedicated_pages=True, *args, **kwargs):
+    def Document(self, tex_path, tables:List['Table'], tabular_dir='tables', landscape=False, dedicated_pages=True, *args, **kwargs):
         lines = []
-        lines.append('\\documentclass[10pt,a4paper]{article}')
+        lines.append('\\documentclass[10pt,a4paper]{article}')  
         lines.append('\\usepackage[utf8]{inputenc}')
         lines.append('\\usepackage{amsmath}')
         lines.append('\\usepackage{amsfonts}')

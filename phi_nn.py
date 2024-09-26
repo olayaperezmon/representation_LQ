@@ -63,8 +63,8 @@ HIDDEN = 100
 NUM_TR_CLASS = 100
 
 # wandb config
-USE_WANDB = False
-wandb_project_name = "NN_PHI"
+USE_WANDB = True
+wandb_project_name = "PHI_NN_PH"
 #wandb_execution_name = "phi_nn_nuevo"+('_bin' if BINARY else '')+('+triplet' if USE_TRIPLET_LOSS else '')+('+cls' if USE_CLASSIFICATION_LOSS else '')+('+autoenc' if USE_AUTOENCODER else '')+('+reg' if USE_REGRESSOR else '')+('+att' if USE_ATTENTION else '')
 
 """if TOCUDA:
@@ -172,14 +172,21 @@ class PhiGrande_CovMat(nn.Module):
         super(PhiGrande_CovMat, self).__init__()
         self.phi_pequena = phi_pequena
         self.attention = nn.Parameter(torch.rand(latent_dims), requires_grad=True)
-
+        #self.linear = torch.nn.Linear((latent_dims*(latent_dims+1)//2)+latent_dims, (latent_dims*(latent_dims+1)//2)+latent_dims)
+    
     def forward(self, X):
         X = self.phi_pequena(X)
-        S = X.T@X
-        S_n = S/X.shape[0]
-        triu_ind = torch.triu_indices(S.shape[0], S.shape[0], 1)
-        triu_S = S_n[triu_ind[0], triu_ind[1]]
-        output = regressor_phigrande(triu_S)
+        
+        mean = torch.mean(X, dim=0)
+        X_mean = X - mean
+        cov_mat = torch.matmul(X_mean.T, X_mean) / (X_mean.shape[0] - 1)
+        
+        triu_ind = torch.triu_indices(cov_mat.shape[0], cov_mat.shape[1], 0)
+        triu_covmat = cov_mat[triu_ind[0], triu_ind[1]]
+        triu_covmat = triu_covmat.flatten()
+        
+        covmat_mean = torch.cat((triu_covmat, mean))
+        output = regressor_phigrande(covmat_mean)
         return output, X
 
 class PhiGrande_Histograms(nn.Module):
@@ -235,7 +242,7 @@ class Regressor_PhiGrande(nn.Module):
         self.module.add_module("relu2", nn.ReLU())
 
     def forward(self, x):
-        return self.module(x) #F.softmax(self.module(x)) #probar
+        return self.module(x) #F.softmax(self.module(x)) 
     
 class Regressor_Solver(nn.Module):
     def __init__(self, input_dim, output_dim):
@@ -307,7 +314,7 @@ class EarlyStopping:
                     "val_loss": val_loss
                 }
                 #with open(f"rep/{ty}/{dataset_name}/{wandb_execution_name}.json", "w") as archivo:
-                with open(f"prueba/{wandb_execution_name}.json", "w") as archivo:
+                with open(f"prueba/{ty}/{dataset_name}/{wandb_execution_name}.json", "w") as archivo:
                     archivo.write(json.dumps(report))
     
         elif val_loss >= self.best_score:
@@ -326,7 +333,7 @@ class EarlyStopping:
                     "val_loss": val_loss
                 }
                 #with open(f"rep/{ty}/{dataset_name}/{wandb_execution_name}.json", "w") as archivo:
-                with open(f"prueba/{wandb_execution_name}.json", "w") as archivo:
+                with open(f"prueba/{ty}/{dataset_name}/{wandb_execution_name}.json", "w") as archivo:
                     archivo.write(json.dumps(report))            
 
 def save_json(q, M_prev, M_prev_contr):
@@ -418,7 +425,7 @@ if __name__ == '__main__':
 
     parser.add_argument("-cls_ntl", '--USE_CLASSIFICATION_NEXT_TO_LAST_LOSS', type=bool, default=False)
     parser.add_argument("-cls_post", '--USE_CLASSIFICATION_POSTERIORS_LOSS', type=bool, default=False)
-    parser.add_argument("-reg_gr",'--USE_PHIGRANDE_REGRESSOR', type=bool, default=False)
+    parser.add_argument("-cm",'--USE_PHIGRANDE_COVMAT', type=bool, default=False)
     parser.add_argument("-hist",'--USE_HISTNET', type=bool, default=False)
     parser.add_argument("-aut", '--USE_AUTOENCODER', type=bool, default=False)
 
@@ -438,8 +445,9 @@ if __name__ == '__main__':
 
     USE_CLASSIFICATION_POSTERIORS_LOSS = args.USE_CLASSIFICATION_POSTERIORS_LOSS
     USE_CLASSIFICATION_NEXT_TO_LAST_LOSS = args.USE_CLASSIFICATION_NEXT_TO_LAST_LOSS
-    USE_PHIGRANDE_COVMAT = args.USE_PHIGRANDE_REGRESSOR
     USE_AUTOENCODER = args.USE_AUTOENCODER
+
+    USE_PHIGRANDE_COVMAT = args.USE_PHIGRANDE_COVMAT
     USE_HISTNET = args.USE_HISTNET
     USE_ATTENTION = args.USE_ATTENTION
 
@@ -469,7 +477,7 @@ if __name__ == '__main__':
     
     for dataset_name in datasets:
         print(dataset_name)
-        wandb_execution_name = dataset_name+'_'+('Mq+' if USE_M_q else '')+('REG' if USE_REGRESSOR else '')+('QNT' if USE_QUANT_LOSS else '')+('TRI' if USE_TRIPLET_LOSS else '')+('+CP1' if USE_CLASSIFICATION_POSTERIORS_LOSS else '+CP0')+('+CN1' if USE_CLASSIFICATION_NEXT_TO_LAST_LOSS else '+CN0')+('+AE1' if USE_AUTOENCODER else '+AE0')+('+PGR1' if USE_PHIGRANDE_COVMAT else '+PGR0')+('+16bHIS1' if USE_HISTNET else '+HIS0')+('+ATT1' if USE_ATTENTION else '+ATT0')+('+DO1' if args.dropout else '+DO0')
+        wandb_execution_name = dataset_name+'_'+('Mq+' if USE_M_q else '')+('REG' if USE_REGRESSOR else '')+('QNT' if USE_QUANT_LOSS else '')+('TRI' if USE_TRIPLET_LOSS else '')+('+CP1' if USE_CLASSIFICATION_POSTERIORS_LOSS else '+CP0')+('+CN1' if USE_CLASSIFICATION_NEXT_TO_LAST_LOSS else '+CN0')+('+AE1' if USE_AUTOENCODER else '+AE0')+('+CM1' if USE_PHIGRANDE_COVMAT else '+CM0')+('+16bHIS1' if USE_HISTNET else '+HIS0')+('+ATT1' if USE_ATTENTION else '+ATT0')+('+DO1' if args.dropout else '+DO0')
         if USE_WANDB:
             wandb.login()
         if USE_WANDB:
@@ -566,12 +574,12 @@ if __name__ == '__main__':
             params += list(regressor.parameters())
             p.append("regressor")
         if USE_PHIGRANDE_COVMAT: 
-            regressor_phigrande = Regressor_PhiGrande(latent_dims*(latent_dims-1)//2, latent_dims)
+            regressor_phigrande = Regressor_PhiGrande((latent_dims*(latent_dims+1)//2)+latent_dims, latent_dims)
             phi_grande = PhiGrande_CovMat(phi_pequena)
             params += list(regressor_phigrande.parameters())
             params += list(phi_grande.parameters())
             p.append("regressor_phigrande")
-            p.append("phi_grcovmat")
+            p.append("phi_gr_covmat")
         if not USE_HISTNET and not USE_PHIGRANDE_COVMAT and not USE_ATTENTION:
             phi_grande = PhiGrande_Mean(phi_pequena, USE_ATTENTION)
             params += list(phi_grande.parameters())
@@ -598,13 +606,14 @@ if __name__ == '__main__':
         n_ages = 1000
         mse_loss = nn.MSELoss()
         loss_str = LossStr()
-        n = 20000
+        n = 20_000
         min_val_loss = np.inf
         for age in range(n_ages):
 
             if USE_M_q :
-                LM, Lq = train.split_stratified(train_prop=0.5)
+                LM, Lq = train.split_stratified(train_prop=0.75)
                 sample_size = random.randint(100, 500)
+                
                 if len(LM)> n: 
                     LM = LM.sampling(n, *LM.prevalence())
                 
@@ -672,9 +681,15 @@ if __name__ == '__main__':
 
             else: 
                 sample_size = random.randint(100, 500)
+                #sample_size = random.randint(4000, 10000)
                 
-                upp_gen = UPP(train, sample_size=sample_size, random_state=None, return_type="sample_prev")
-                for i, (sam, prev) in enumerate(upp_gen()):
+                #upp_gen = UPP(train, sample_size=sample_size, random_state=None, return_type="sample_prev")
+                upp_gen = UPP(train, sample_size=sample_size, random_state=None, return_type="labelled_collection")
+                
+                for i, lab_col in enumerate(upp_gen()):
+                    sam = lab_col.X
+                    prev = lab_col.prevalence()
+                    y = lab_col.y
                     phi_pequena.train()
                     phi_grande.train()
                     regressor.train()
@@ -692,6 +707,7 @@ if __name__ == '__main__':
                     loss = 0
 
                     prev = torch.tensor(prev, dtype=torch.float32)
+                    y = torch.tensor(y, dtype=torch.long)
                     p_hat = regressor(Phi_X)
                     ae = torch.mean(torch.abs(prev-p_hat))
                     loss_str.add(ae, 'regressor solver ae')
@@ -704,12 +720,12 @@ if __name__ == '__main__':
                         loss += loss_autoencoder
 
                     if USE_CLASSIFICATION_NEXT_TO_LAST_LOSS:    
-                        loss_classif_ntl = regularization_classif(sam, prev, linear_classif, next_to_last=True)
+                        loss_classif_ntl = regularization_classif(sam, y, linear_classif, next_to_last=True)
                         loss_str.add(loss_classif_ntl, 'classif_ntl')
                         loss += loss_classif_ntl
                         
                     if USE_CLASSIFICATION_POSTERIORS_LOSS:    
-                        loss_classif_post = regularization_classif(sam, prev, None, next_to_last=False)
+                        loss_classif_post = regularization_classif(sam, y, None, next_to_last=False)
                         loss_str.add(loss_classif_post, 'classif_post')
                         loss += loss_classif_post
 
