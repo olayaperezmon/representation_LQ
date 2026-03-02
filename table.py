@@ -22,8 +22,8 @@ class Format:
     lower_is_better: bool = True
     stat_test: str = 'wilcoxon'
     color_mode: str = 'local'
-    with_mean: bool = True
-    with_rank_mean: bool = True
+    with_mean: bool = False
+    with_rank_mean: bool = True #False
     only_full_mean: bool = True
     best_color: str = 'green'
     worst_color: str = 'red'
@@ -510,7 +510,7 @@ class Table:
         lines.append('\\begin{table}[h]')
         lines.append('\center')
         if resizebox:
-            lines.append('\\resizebox{0.8\\textwidth}{!}{%')
+            lines.append('\\resizebox{0.4\\textwidth}{!}{%')
 
         tabular_str = self.tabular(tabular_path, benchmark_replace, method_replace, benchmark_order, method_order, transpose)
         if tabular_path is None:

@@ -1,0 +1,1 @@
+python phi_nn_modified_lequa.py -dataset T2 -phi phi_f -Phi Phi_H -L LZ -dropout 0 -s 2032 -b 5000 -lr 0.001 -lr_end 0.0001 -error RAE -d cuda:0
