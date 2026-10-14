@@ -10,12 +10,12 @@ from pathlib import Path
 
 @dataclass
 class Format:
-    mean_prec: int = 3
+    mean_prec: int = 4
     std_prec: int = 3
     meanrank_prec: int = 1
     meanrank_std_prec: int = 1
     show_std: bool = False 
-    remove_zero: bool = True #.0
+    remove_zero: bool = False #.0
     color: bool = True
     maxtone: int = 40
     style: str = 'minimal'
@@ -114,7 +114,7 @@ class Cell:
                 if 0.001 > pval:
                     comp_symbol = whitespace
                 elif 0.01 > pval >= 0.001:
-                    comp_symbol = '$^{\dag}$'
+                    comp_symbol = whitespace #'$^{\dag}$'
                 elif pval >= 0.01:
                     comp_symbol = '$^{\ddag}$'
             str_cell = f'{mean}{comp_symbol}{std}'
